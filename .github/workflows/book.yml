@@ -30,4 +30,4 @@ jobs:
           GYM_PERSON_ID: ${{ secrets.GYM_PERSON_ID }}
           GYM_SHEET_ID: ${{ secrets.GYM_SHEET_ID }}
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
-        run: python booker.py
+        run: python -u booker.py
