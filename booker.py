@@ -127,41 +127,43 @@ def resolve(name, date, time_str):
     return matches[0], None
 
 
-def process_row(row, now):
-    """Decide what to do with one row. Returns status text, or None to wait."""
+def parse_row(row):
+    """Pull the fields out of a sheet row. Returns (name, date, time, start)."""
     name = str(row.get("class_name", "")).strip()
     date = str(row.get("date", "")).strip()
     time_str = str(row.get("time", "")).strip()
 
     if not (name and date and time_str):
         return None
-
     try:
-        class_start = datetime.datetime.fromisoformat(f"{date} {time_str}")
+        start = datetime.datetime.fromisoformat(f"{date} {time_str}")
     except ValueError:
-        return f"BAD DATE/TIME - {date} {time_str}"
-
-    if class_start < now:
-        return "SKIPPED - already started"
-
-    opens_at = class_start - WINDOW
-
-    # Too far out to be worth waiting for. Try again on a later run.
-    if opens_at - now > WAIT_HORIZON:
         return None
+    return name, date, time_str, start
 
+
+def attempt_now(sheet, row_number, name, date, time_str):
+    """Resolve and book immediately. Writes status to the sheet."""
     target, error = resolve(name, date, time_str)
     if error:
-        return error
+        write(sheet, row_number, error)
+        return
 
-    # Window already open - book immediately.
-    if now >= opens_at:
-        if target["remaining_spots"] == 0:
-            return "FULL - missed it"
-        status, _ = book(target["pk"], target["sk"])
-        return status
+    if target["remaining_spots"] == 0:
+        write(sheet, row_number, "FULL - missed it")
+        return
 
-    # Opening soon. Wait for it, then fire repeatedly.
+    status, _ = book(target["pk"], target["sk"])
+    write(sheet, row_number, status)
+
+
+def attempt_at(sheet, row_number, name, date, time_str, opens_at):
+    """Wait for the release moment, then fire repeatedly."""
+    target, error = resolve(name, date, time_str)
+    if error:
+        write(sheet, row_number, error)
+        return
+
     print(f"    waiting until {opens_at:%H:%M:%S} for {name}...")
     sleep_until(opens_at - datetime.timedelta(milliseconds=LEAD_MS))
 
@@ -174,11 +176,19 @@ def process_row(row, now):
         status, settled = book(target["pk"], target["sk"])
         if settled:
             print(f"    attempt {attempts}: {status}")
-            return status
+            write(sheet, row_number, status)
+            return
         last = status
         time.sleep(RETRY_INTERVAL)
 
-    return f"FAILED after {attempts} attempts - {last}"
+    write(sheet, row_number, f"FAILED after {attempts} attempts - {last}")
+
+
+def write(sheet, row_number, status):
+    """Write a status and say so, so the log and sheet never disagree."""
+    print(f"  row {row_number}: {status}")
+    sheet.update_cell(row_number, 4, status)
+
 
 def main():
     creds = Credentials.from_service_account_info(
@@ -189,28 +199,49 @@ def main():
     rows = sheet.get_all_records()
     now = datetime.datetime.now()
 
-    print(f"{len(rows)} row(s) in sheet, now {now:%a %d %b %H:%M}\n")
+    print(f"{len(rows)} row(s) in sheet, now {now:%a %d %b %H:%M}")
+
+    pending = []   # rows whose window opens later
 
     for index, row in enumerate(rows):
         row_number = index + 2  # row 1 is headers
 
         existing = str(row.get("status", "")).strip()
         if existing.startswith(("BOOKED", "ALREADY BOOKED", "FULL", "SKIPPED")):
-            print(f"  row {row_number}: settled ({existing}) - skipping")
             continue
 
-        status = process_row(row, now)
-        if status is None:
-            class_start = f"{row.get('date')} {row.get('time')}"
-            try:
-                opens = (datetime.datetime.fromisoformat(class_start)
-                         - WINDOW)
-                note = f"waiting - opens {opens:%a %d %b %H:%M}"
-            except ValueError:
-                continue
-            print(f"  row {row_number}: {note}")
-            sheet.update_cell(row_number, 4, note)
+        parsed = parse_row(row)
+        if parsed is None:
             continue
+        name, date, time_str, start = parsed
+
+        if start < now:
+            write(sheet, row_number, "SKIPPED - already started")
+            continue
+
+        opens_at = start - WINDOW
+
+        if now >= opens_at:
+            # Window already open - deal with it right away.
+            attempt_now(sheet, row_number, name, date, time_str)
+        else:
+            pending.append((opens_at, row_number, name, date, time_str))
+
+    if not pending:
+        return
+
+    # Only ever wait for the single soonest release. Waiting blocks
+    # everything, so a later run picks up the rest.
+    pending.sort()
+    opens_at, row_number, name, date, time_str = pending[0]
+
+    for other in pending[1:]:
+        write(sheet, other[1], f"waiting - opens {other[0]:%a %d %b %H:%M}")
+
+    if opens_at - now <= WAIT_HORIZON:
+        attempt_at(sheet, row_number, name, date, time_str, opens_at)
+    else:
+        write(sheet, row_number, f"waiting - opens {opens_at:%a %d %b %H:%M}")
 
 if __name__ == "__main__":
     main()
