@@ -208,10 +208,6 @@ def attempt_now(sheet, row_number, name, date, time_str, center_id):
         write(sheet, row_number, error)
         return
 
-    if target["remaining_spots"] == 0:
-        write(sheet, row_number, "FULL - missed it")
-        return
-
     status, _ = book(target["pk"], target["sk"])
     write(sheet, row_number, status)
 
