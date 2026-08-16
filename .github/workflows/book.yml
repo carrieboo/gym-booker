@@ -26,6 +26,7 @@ jobs:
         env:
           TZ: Australia/Sydney
           GYM_CENTER_ID: ${{ secrets.GYM_CENTER_ID }}
+          GYM_PERSON_CENTER: ${{ secrets.GYM_PERSON_CENTER }}
           GYM_EXTERNAL_ID: ${{ secrets.GYM_EXTERNAL_ID }}
           GYM_PERSON_ID: ${{ secrets.GYM_PERSON_ID }}
           GYM_SHEET_ID: ${{ secrets.GYM_SHEET_ID }}
